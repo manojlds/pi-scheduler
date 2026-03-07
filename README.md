@@ -45,6 +45,18 @@ Examples:
 Manage scheduled tasks.
 
 ```text
+/schedule
+```
+
+With no args, this opens an interactive TUI manager where you can:
+- select a task
+- change interval/delay
+- run it now
+- delete it
+
+CLI subcommands also work:
+
+```text
 /schedule list
 /schedule delete <id>
 /schedule clear

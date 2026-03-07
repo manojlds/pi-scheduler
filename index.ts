@@ -34,6 +34,28 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 	let runtimeCtx: ExtensionContext | undefined;
 	let dispatching = false;
 
+	function sortedTasks(): ScheduleTask[] {
+		return Array.from(tasks.values()).sort((a, b) => a.nextRunAt - b.nextRunAt);
+	}
+
+	function truncateText(value: string, max = 64): string {
+		if (value.length <= max) return value;
+		return `${value.slice(0, Math.max(0, max - 3))}...`;
+	}
+
+	function formatClock(timestamp: number): string {
+		return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	}
+
+	function taskMode(task: ScheduleTask): string {
+		if (task.kind === "once") return "once";
+		return `every ${formatDurationShort(task.intervalMs ?? DEFAULT_LOOP_INTERVAL)}`;
+	}
+
+	function taskOptionLabel(task: ScheduleTask): string {
+		return `${task.id} • ${taskMode(task)} • ${formatRelativeTime(task.nextRunAt)} • ${truncateText(task.prompt, 58)}`;
+	}
+
 	function updateStatus() {
 		if (!runtimeCtx?.hasUI) return;
 		if (tasks.size === 0) {
@@ -270,16 +292,13 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 	}
 
 	function formatTaskList(): string {
-		const list = Array.from(tasks.values()).sort((a, b) => a.nextRunAt - b.nextRunAt);
+		const list = sortedTasks();
 		if (list.length === 0) return "No scheduled tasks.";
 
-		const lines = ["Scheduled tasks:", ""]; 
+		const lines = ["Scheduled tasks:", ""];
 		for (const task of list) {
-			const mode =
-				task.kind === "once"
-					? "once"
-					: `every ${formatDurationShort(task.intervalMs ?? DEFAULT_LOOP_INTERVAL)}`;
-			const next = `${formatRelativeTime(task.nextRunAt)} (${new Date(task.nextRunAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })})`;
+			const mode = taskMode(task);
+			const next = `${formatRelativeTime(task.nextRunAt)} (${formatClock(task.nextRunAt)})`;
 			const preview = task.prompt.length > 72 ? `${task.prompt.slice(0, 69)}...` : task.prompt;
 			lines.push(`${task.id}  ${mode}  next ${next}`);
 			lines.push(`  ${preview}`);
@@ -327,6 +346,116 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		return task;
 	}
 
+	async function openTaskManager(ctx: ExtensionContext): Promise<void> {
+		if (!ctx.hasUI) {
+			pi.sendMessage({
+				customType: "pi-scheduler",
+				content: formatTaskList(),
+				display: true,
+			});
+			return;
+		}
+
+		while (true) {
+			const list = sortedTasks();
+			if (list.length === 0) {
+				ctx.ui.notify("No scheduled tasks.", "info");
+				return;
+			}
+
+			const options = list.map(taskOptionLabel);
+			options.push("➕ Close");
+
+			const selected = await ctx.ui.select("Scheduled tasks (select one)", options);
+			if (!selected || selected === "➕ Close") return;
+
+			const taskId = selected.slice(0, 8);
+			const task = tasks.get(taskId);
+			if (!task) {
+				ctx.ui.notify("Task no longer exists. Refreshing list...", "warning");
+				continue;
+			}
+
+			const closed = await openTaskActions(ctx, task.id);
+			if (closed) return;
+		}
+	}
+
+	async function openTaskActions(ctx: ExtensionContext, taskId: string): Promise<boolean> {
+		while (true) {
+			const task = tasks.get(taskId);
+			if (!task) {
+				ctx.ui.notify("Task no longer exists.", "warning");
+				return false;
+			}
+
+			const title = `${task.id} • ${taskMode(task)} • next ${formatRelativeTime(task.nextRunAt)} (${formatClock(task.nextRunAt)})`;
+			const options = [
+				task.kind === "recurring" ? "⏱ Change interval" : "⏱ Change reminder delay",
+				"▶ Run now",
+				"🗑 Delete",
+				"↩ Back",
+				"✕ Close",
+			];
+			const action = await ctx.ui.select(title, options);
+
+			if (!action || action === "↩ Back") return false;
+			if (action === "✕ Close") return true;
+
+			if (action === "🗑 Delete") {
+				const ok = await ctx.ui.confirm("Delete scheduled task?", `${task.id}: ${task.prompt}`);
+				if (!ok) continue;
+				tasks.delete(task.id);
+				updateStatus();
+				ctx.ui.notify(`Deleted scheduled task ${task.id}.`, "info");
+				return false;
+			}
+
+			if (action === "▶ Run now") {
+				task.nextRunAt = Date.now();
+				task.pending = true;
+				updateStatus();
+				void tickScheduler();
+				ctx.ui.notify(`Queued ${task.id} to run now.`, "info");
+				continue;
+			}
+
+			if (action.startsWith("⏱")) {
+				const defaultValue =
+					task.kind === "recurring"
+						? formatDurationShort(task.intervalMs ?? DEFAULT_LOOP_INTERVAL)
+						: formatDurationShort(Math.max(task.nextRunAt - Date.now(), ONE_MINUTE));
+
+				const raw = await ctx.ui.input(
+					task.kind === "recurring" ? "New interval (e.g. 5m, 2h)" : "New delay from now (e.g. 30m, 2h)",
+					defaultValue,
+				);
+				if (!raw) continue;
+
+				const parsed = parseDuration(raw);
+				if (!parsed) {
+					ctx.ui.notify("Invalid duration. Try values like 5m, 2h, or 1 day.", "warning");
+					continue;
+				}
+
+				const normalized = normalizeDuration(parsed);
+				if (task.kind === "recurring") {
+					task.intervalMs = normalized.durationMs;
+					task.jitterMs = computeJitterMs(task.id, normalized.durationMs);
+					task.nextRunAt = Date.now() + normalized.durationMs + task.jitterMs;
+					task.pending = false;
+					ctx.ui.notify(`Updated ${task.id} to every ${formatDurationShort(normalized.durationMs)}.`, "info");
+				} else {
+					task.nextRunAt = Date.now() + normalized.durationMs;
+					task.pending = false;
+					ctx.ui.notify(`Updated ${task.id} reminder to ${formatRelativeTime(task.nextRunAt)}.`, "info");
+				}
+				if (normalized.note) ctx.ui.notify(normalized.note, "info");
+				updateStatus();
+			}
+		}
+	}
+
 	pi.registerCommand("loop", {
 		description: "Schedule recurring prompt: /loop 5m <prompt> or /loop <prompt> every 2h",
 		handler: async (args, ctx) => {
@@ -365,19 +494,22 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			}
 
 			const task = addOneShotTask(parsed.prompt, parsed.durationMs);
-			ctx.ui.notify(
-				`Reminder set for ${formatRelativeTime(task.nextRunAt)} (id: ${task.id}).`,
-				"info",
-			);
+			ctx.ui.notify(`Reminder set for ${formatRelativeTime(task.nextRunAt)} (id: ${task.id}).`, "info");
 			if (parsed.note) ctx.ui.notify(parsed.note, "info");
 		},
 	});
 
 	pi.registerCommand("schedule", {
-		description: "Manage scheduled tasks: /schedule list | delete <id> | clear",
+		description: "Manage schedules. No args opens TUI manager. Also: list | delete <id> | clear",
 		handler: async (args, ctx) => {
-			const [rawAction, rawArg] = args.trim().split(/\s+/, 2);
-			const action = (rawAction || "list").toLowerCase();
+			const trimmed = args.trim();
+			if (!trimmed || trimmed === "tui") {
+				await openTaskManager(ctx);
+				return;
+			}
+
+			const [rawAction, rawArg] = trimmed.split(/\s+/, 2);
+			const action = rawAction.toLowerCase();
 
 			if (action === "list") {
 				pi.sendMessage({
@@ -411,7 +543,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			ctx.ui.notify("Usage: /schedule list | delete <id> | clear", "warning");
+			ctx.ui.notify("Usage: /schedule [tui|list|delete <id>|clear]", "warning");
 		},
 	});
 
