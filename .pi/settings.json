@@ -1,0 +1,12 @@
+{
+  "packages": [
+    {
+      "source": "npm:pi-scheduler",
+      "extensions": [],
+      "skills": [],
+      "prompts": [],
+      "themes": []
+    },
+    ".."
+  ]
+}
