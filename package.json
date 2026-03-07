@@ -1,0 +1,33 @@
+{
+  "name": "pi-scheduler",
+  "version": "0.1.0",
+  "description": "Simple scheduled loop/reminder extension for pi",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "scheduler",
+    "loop",
+    "cron"
+  ],
+  "type": "module",
+  "main": "./index.ts",
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.57.0",
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}
