@@ -14,6 +14,7 @@
   "main": "./index.ts",
   "files": [
     "index.ts",
+    "src",
     "README.md",
     "LICENSE"
   ],
@@ -22,12 +23,19 @@
       "./index.ts"
     ]
   },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.48",
+    "croner": "^9.1.0"
+  },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/**/*.test.ts",
+    "check": "npm run typecheck && npm test && npm pack --dry-run"
   },
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "^0.57.0",
     "@types/node": "^22.13.10",
+    "tsx": "^4.20.6",
     "typescript": "^5.8.2"
   }
 }
